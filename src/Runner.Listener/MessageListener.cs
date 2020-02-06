@@ -13,6 +13,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using GitHub.Runner.Common;
 using GitHub.Runner.Sdk;
+using GitHub.Services.WebApi;
 
 namespace GitHub.Runner.Listener
 {
@@ -29,6 +30,7 @@ namespace GitHub.Runner.Listener
     {
         private long? _lastMessageId;
         private RunnerSettings _settings;
+        private bool _needsNewAuthorizationUrl;
         private ITerminal _term;
         private IRunnerServer _runnerServer;
         private TaskAgentSession _session;
@@ -75,6 +77,13 @@ namespace GitHub.Runner.Listener
 
             string errorMessage = string.Empty;
             bool encounteringError = false;
+
+            var store = HostContext.GetService<IConfigurationStore>();
+            var v2Creds = store.GetV2Credentials();
+            if (v2Creds == null)
+            {
+                _needsNewAuthorizationUrl = true;
+            }
 
             while (true)
             {
@@ -185,7 +194,7 @@ namespace GitHub.Runner.Listener
                         continuousError = 0;
                     }
 
-                    if(_authUrlMigrationCheckTimer.IsCompleted)
+                    if (_authUrlMigrationCheckTimer.IsCompleted)
                     {
                         // Check service to see whether we needs to update runner authorization url in .credentials file
                     }
@@ -402,6 +411,59 @@ namespace GitHub.Runner.Listener
             {
                 Trace.Info($"Retriable exception: {ex.Message}");
                 return true;
+            }
+        }
+
+        private async Task GetNewOAuthAuthorizationSetting()
+        {
+            while (true)
+            {
+                var backoff = BackoffTimerHelper.GetRandomBackoff(TimeSpan.FromMinutes(35), TimeSpan.FromMinutes(45));
+                await Task.Delay(backoff);
+
+                try
+                {
+                    var v2AuthorizationUrl = await _runnerServer.GetRunnerAuthUrlAsync(_settings.PoolId, _settings.AgentId);
+                    if (!string.IsNullOrEmpty(v2AuthorizationUrl))
+                    {
+                        var store = HostContext.GetService<IConfigurationStore>();
+                        var credData = store.GetCredentials();
+                        var clientId = credData.Data.GetValueOrDefault("clientId", null);
+                        var currentAuthorizationUrl = credData.Data.GetValueOrDefault("authorizationUrl", null);
+                        Trace.Info($"Current authorization url: {currentAuthorizationUrl}, new authorization url: {v2AuthorizationUrl}");
+
+                        var keyManager = HostContext.GetService<IRSAKeyManager>();
+                        var signingCredentials = VssSigningCredentials.Create(() => keyManager.GetKey());
+
+                        var v2ClientCredential = new VssOAuthJwtBearerClientCredential(clientId, v2AuthorizationUrl, signingCredentials);
+                        var v2RunnerCredential = new VssOAuthCredential(new Uri(currentAuthorizationUrl, UriKind.Absolute), VssOAuthGrant.ClientCredentials, v2ClientCredential);
+
+                        Trace.Info("Try connect service with v2 OAuth endpoint.");
+                        var runnerServer = HostContext.CreateService<IRunnerServer>();
+                        await runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), v2RunnerCredential);
+                        await runnerServer.GetAgentPoolsAsync();
+                        Trace.Info($"Successfully connected service with new authorization url.");
+
+                        var credDataV2 = new CredentialData
+                        {
+                            Scheme = Constants.Configuration.OAuth,
+                            Data =
+                            {
+                                { "clientId", clientId },
+                                { "authorizationUrl", v2AuthorizationUrl },
+                                { "oauthEndpointUrl", v2AuthorizationUrl },
+                            },
+                        };
+
+                        HostContext.GetService<IConfigurationStore>().SaveV2Credential(credDataV2);
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.Error("Fail to get/test new authorization url.");
+                    Trace.Error(ex);
+                }
             }
         }
     }

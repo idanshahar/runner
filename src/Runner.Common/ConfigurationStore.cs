@@ -78,6 +78,7 @@ namespace GitHub.Runner.Common
         bool IsServiceConfigured();
         bool HasCredentials();
         CredentialData GetCredentials();
+        CredentialData GetV2Credentials();
         RunnerSettings GetSettings();
         void SaveCredential(CredentialData credential);
         void SaveV2Credential(CredentialData credential);
@@ -96,6 +97,7 @@ namespace GitHub.Runner.Common
         private string _serviceConfigFilePath;
 
         private CredentialData _creds;
+        private CredentialData _credsV2;
         private RunnerSettings _settings;
 
         public override void Initialize(IHostContext hostContext)
@@ -122,8 +124,6 @@ namespace GitHub.Runner.Common
 
             _serviceConfigFilePath = hostContext.GetConfigFile(WellKnownConfigFile.Service);
             Trace.Info("ServiceConfigFilePath: {0}", _serviceConfigFilePath);
-
-            _v2CredUpdated = false;
         }
 
         public string RootFolder { get; private set; }
@@ -159,13 +159,17 @@ namespace GitHub.Runner.Common
                 _creds = IOUtil.LoadObject<CredentialData>(_credFilePath);
             }
 
-            if (_v2CredUpdated)
+            return _creds;
+        }
+
+        public CredentialData GetV2Credentials()
+        {
+            if (_credsV2 == null)
             {
-                _creds = IOUtil.LoadObject<CredentialData>(_credV2FilePath);
-                _v2CredUpdated = false;
+                _credsV2 = IOUtil.LoadObject<CredentialData>(_credV2FilePath);
             }
 
-            return _creds;
+            return _credsV2;
         }
 
         public RunnerSettings GetSettings()
@@ -204,7 +208,7 @@ namespace GitHub.Runner.Common
 
         public void SaveV2Credential(CredentialData credential)
         {
-            Trace.Info("Saving {0} credential @ {1}", credential.Scheme, _credV2FilePath);
+            Trace.Info("Saving {0} v2 credential @ {1}", credential.Scheme, _credV2FilePath);
             if (File.Exists(_credV2FilePath))
             {
                 // Delete existing credential file first, since the file is hidden and not able to overwrite.
@@ -213,10 +217,8 @@ namespace GitHub.Runner.Common
             }
 
             IOUtil.SaveObject(credential, _credV2FilePath);
-            Trace.Info("Credentials Saved.");
+            Trace.Info("v2 Credentials Saved.");
             File.SetAttributes(_credV2FilePath, File.GetAttributes(_credV2FilePath) | FileAttributes.Hidden);
-
-            _v2CredUpdated = true;
         }
 
         public void SaveSettings(RunnerSettings settings)

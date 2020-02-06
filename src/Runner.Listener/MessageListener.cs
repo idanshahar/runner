@@ -37,6 +37,7 @@ namespace GitHub.Runner.Listener
         private readonly TimeSpan _sessionConflictRetryLimit = TimeSpan.FromMinutes(4);
         private readonly TimeSpan _clockSkewRetryLimit = TimeSpan.FromMinutes(30);
         private readonly Dictionary<string, int> _sessionCreationExceptionTracker = new Dictionary<string, int>();
+        private Task _authUrlMigrationCheckTimer;
 
         public override void Initialize(IHostContext hostContext)
         {
@@ -44,6 +45,7 @@ namespace GitHub.Runner.Listener
 
             _term = HostContext.GetService<ITerminal>();
             _runnerServer = HostContext.GetService<IRunnerServer>();
+            _authUrlMigrationCheckTimer = Task.Delay(BackoffTimerHelper.GetRandomBackoff(TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(45)));
         }
 
         public async Task<Boolean> CreateSessionAsync(CancellationToken token)
@@ -83,7 +85,7 @@ namespace GitHub.Runner.Listener
                     Trace.Info("Connecting to the Runner Server...");
                     await _runnerServer.ConnectAsync(new Uri(serverUrl), creds);
                     Trace.Info("VssConnection created");
-                    
+
                     _term.WriteLine();
                     _term.WriteSuccessMessage("Connected to GitHub");
                     _term.WriteLine();
@@ -181,6 +183,11 @@ namespace GitHub.Runner.Listener
                         _term.WriteLine($"{DateTime.UtcNow:u}: Runner reconnected.");
                         encounteringError = false;
                         continuousError = 0;
+                    }
+
+                    if(_authUrlMigrationCheckTimer.IsCompleted)
+                    {
+                        // Check service to see whether we needs to update runner authorization url in .credentials file
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)

@@ -269,14 +269,7 @@ namespace GitHub.Runner.Listener.Configuration
                 };
 
                 // Save the negotiated OAuth credential data
-                if (agent.Authorization.Version == 2)
-                {
-                    _store.SaveV2Credential(credentialData);
-                }
-                else
-                {
-                    _store.SaveCredential(credentialData);
-                }
+                _store.SaveCredential(credentialData);
             }
             else
             {

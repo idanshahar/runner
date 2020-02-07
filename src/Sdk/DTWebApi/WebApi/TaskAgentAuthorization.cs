@@ -14,12 +14,10 @@ namespace GitHub.DistributedTask.WebApi
         /// </summary>
         public TaskAgentAuthorization()
         {
-            this.Version = 1;
         }
 
         private TaskAgentAuthorization(TaskAgentAuthorization objectToBeCloned)
         {
-            this.Version = objectToBeCloned.Version;
             this.AuthorizationUrl = objectToBeCloned.AuthorizationUrl;
             this.ClientId = objectToBeCloned.ClientId;
 
@@ -27,17 +25,6 @@ namespace GitHub.DistributedTask.WebApi
             {
                 this.PublicKey = objectToBeCloned.PublicKey.Clone();
             }
-        }
-
-
-        /// <summary>
-        /// v1 AuthorizationUrl from SPS, v2 AuthorizationUrl from Token.
-        /// </summary>
-        [DataMember(EmitDefaultValue = false)]
-        public int Version
-        {
-            get;
-            set;
         }
 
         /// <summary>

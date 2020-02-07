@@ -45,7 +45,9 @@ namespace GitHub.Runner.Listener
         private bool _v1CredentialsExists;
         private bool _needNewAuthorizationUrl;
         private bool _authorizationUrlUpdated;
+        private bool _rollbackedV1Credentials;
         private Task<VssCredentials> _newAuthorizationUrlMigration;
+        private Task _rollbackReattemptDelay;
 
         public override void Initialize(IHostContext hostContext)
         {
@@ -160,6 +162,8 @@ namespace GitHub.Runner.Listener
                             // v2 credentials might cause lose permission during permission check,
                             // we will force to use v1 credential and try again
                             _useV2Credentials = false;
+                            _rollbackedV1Credentials = true;
+                            _rollbackReattemptDelay = HostContext.Delay(TimeSpan.FromDays(2), token); // retry v2 creds in 2 days.
                             creds = _credMgr.LoadCredentials(false);
                             Trace.Error("Fallback to v1 credentials and try again.");
                         }
@@ -209,6 +213,14 @@ namespace GitHub.Runner.Listener
                 TaskAgentMessage message = null;
                 try
                 {
+                    if (_rollbackedV1Credentials && _rollbackReattemptDelay.IsCompleted)
+                    {
+                        // we rolled back to use v1 creds 2 days before, now it's a good time to try v2 creds again.
+                        var v2Creds = _credMgr.LoadCredentials();
+                        await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), v2Creds);
+                        _rollbackedV1Credentials = false;
+                    }
+
                     message = await _runnerServer.GetAgentMessageAsync(_settings.PoolId,
                                                                 _session.SessionId,
                                                                 _lastMessageId,
@@ -246,6 +258,7 @@ namespace GitHub.Runner.Listener
                                 await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), newCred);
                                 _authorizationUrlUpdated = true;
                                 _useV2Credentials = true;
+                                _rollbackedV1Credentials = false;
                             }
                             catch (Exception ex)
                             {
@@ -282,6 +295,8 @@ namespace GitHub.Runner.Listener
                             // v2 credentials might cause lose permission during permission check,
                             // we will force to use v1 credential and try again
                             _useV2Credentials = false;
+                            _rollbackedV1Credentials = true;
+                            _rollbackReattemptDelay = HostContext.Delay(TimeSpan.FromDays(2), token); // retry v2 creds in 2 days.
                             var v1Creds = _credMgr.LoadCredentials(false);
                             await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), v1Creds);
                             Trace.Error("Fallback to v1 credentials and try again.");
@@ -498,6 +513,12 @@ namespace GitHub.Runner.Listener
                         var clientId = credData.Data.GetValueOrDefault("clientId", null);
                         var currentAuthorizationUrl = credData.Data.GetValueOrDefault("authorizationUrl", null);
                         Trace.Info($"Current authorization url: {currentAuthorizationUrl}, new authorization url: {v2AuthorizationUrl}");
+
+                        if (string.Equals(currentAuthorizationUrl, v2AuthorizationUrl, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // We don't need to update credentials.
+                            await Task.Delay(-1);
+                        }
 
                         var keyManager = HostContext.GetService<IRSAKeyManager>();
                         var signingCredentials = VssSigningCredentials.Create(() => keyManager.GetKey());

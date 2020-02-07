@@ -20,6 +20,7 @@ namespace GitHub.Runner.Common.Tests.Listener
         private Mock<IConfigurationManager> _config;
         private Mock<IRunnerServer> _runnerServer;
         private Mock<ICredentialManager> _credMgr;
+        private Mock<IConfigurationStore> _store;
 
         public MessageListenerL0()
         {
@@ -28,6 +29,7 @@ namespace GitHub.Runner.Common.Tests.Listener
             _config.Setup(x => x.LoadSettings()).Returns(_settings);
             _runnerServer = new Mock<IRunnerServer>();
             _credMgr = new Mock<ICredentialManager>();
+            _store = new Mock<IConfigurationStore>();
         }
 
         private TestHostContext CreateTestContext([CallerMemberName] String testName = "")
@@ -36,6 +38,7 @@ namespace GitHub.Runner.Common.Tests.Listener
             tc.SetSingleton<IConfigurationManager>(_config.Object);
             tc.SetSingleton<IRunnerServer>(_runnerServer.Object);
             tc.SetSingleton<ICredentialManager>(_credMgr.Object);
+            tc.SetSingleton<IConfigurationStore>(_store.Object);
             return tc;
         }
 
@@ -58,7 +61,7 @@ namespace GitHub.Runner.Common.Tests.Listener
                         tokenSource.Token))
                     .Returns(Task.FromResult(expectedSession));
 
-                _credMgr.Setup(x => x.LoadCredentials()).Returns(new VssCredentials());
+                _credMgr.Setup(x => x.LoadCredentials(true)).Returns(new VssCredentials());
 
                 // Act.
                 MessageListener listener = new MessageListener();
@@ -100,7 +103,7 @@ namespace GitHub.Runner.Common.Tests.Listener
                         tokenSource.Token))
                     .Returns(Task.FromResult(expectedSession));
 
-                _credMgr.Setup(x => x.LoadCredentials()).Returns(new VssCredentials());
+                _credMgr.Setup(x => x.LoadCredentials(true)).Returns(new VssCredentials());
 
                 // Act.
                 MessageListener listener = new MessageListener();
@@ -145,7 +148,7 @@ namespace GitHub.Runner.Common.Tests.Listener
                         tokenSource.Token))
                     .Returns(Task.FromResult(expectedSession));
 
-                _credMgr.Setup(x => x.LoadCredentials()).Returns(new VssCredentials());
+                _credMgr.Setup(x => x.LoadCredentials(true)).Returns(new VssCredentials());
 
                 // Act.
                 MessageListener listener = new MessageListener();

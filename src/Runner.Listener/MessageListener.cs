@@ -30,16 +30,21 @@ namespace GitHub.Runner.Listener
     {
         private long? _lastMessageId;
         private RunnerSettings _settings;
-        private bool _needsNewAuthorizationUrl;
-        private bool _authorizationUrlUpdated;
         private ITerminal _term;
         private IRunnerServer _runnerServer;
         private TaskAgentSession _session;
+        private ICredentialManager _credMgr;
+        private IConfigurationStore _configStore;
         private TimeSpan _getNextMessageRetryInterval;
         private readonly TimeSpan _sessionCreationRetryInterval = TimeSpan.FromSeconds(30);
         private readonly TimeSpan _sessionConflictRetryLimit = TimeSpan.FromMinutes(4);
         private readonly TimeSpan _clockSkewRetryLimit = TimeSpan.FromMinutes(30);
         private readonly Dictionary<string, int> _sessionCreationExceptionTracker = new Dictionary<string, int>();
+
+        private bool _useV2Credentials;
+        private bool _v1CredentialsExists;
+        private bool _needNewAuthorizationUrl;
+        private bool _authorizationUrlUpdated;
         private Task<VssCredentials> _newAuthorizationUrlMigration;
 
         public override void Initialize(IHostContext hostContext)
@@ -48,6 +53,8 @@ namespace GitHub.Runner.Listener
 
             _term = HostContext.GetService<ITerminal>();
             _runnerServer = HostContext.GetService<IRunnerServer>();
+            _credMgr = HostContext.GetService<ICredentialManager>();
+            _configStore = HostContext.GetService<IConfigurationStore>();
         }
 
         public async Task<Boolean> CreateSessionAsync(CancellationToken token)
@@ -62,8 +69,7 @@ namespace GitHub.Runner.Listener
 
             // Create connection.
             Trace.Info("Loading Credentials");
-            var credMgr = HostContext.GetService<ICredentialManager>();
-            VssCredentials creds = credMgr.LoadCredentials();
+            VssCredentials creds = _credMgr.LoadCredentials();
 
             var agent = new TaskAgentReference
             {
@@ -78,11 +84,23 @@ namespace GitHub.Runner.Listener
             string errorMessage = string.Empty;
             bool encounteringError = false;
 
-            var store = HostContext.GetService<IConfigurationStore>();
-            var v2Creds = store.GetV2Credentials();
+            var v1Creds = _configStore.GetCredentials();
+            var v2Creds = _configStore.GetV2Credentials();
+            if (v1Creds != null)
+            {
+                _v1CredentialsExists = true;
+            }
+
             if (v2Creds == null)
             {
-                _needsNewAuthorizationUrl = true;
+                if (v1Creds.Scheme == Constants.Configuration.OAuth)
+                {
+                    _needNewAuthorizationUrl = true;
+                }
+            }
+            else
+            {
+                _useV2Credentials = true;
             }
 
             while (true)
@@ -112,7 +130,7 @@ namespace GitHub.Runner.Listener
                         encounteringError = false;
                     }
 
-                    if (_needsNewAuthorizationUrl)
+                    if (_needNewAuthorizationUrl)
                     {
                         // start background task try to get new authorization url
                         _newAuthorizationUrlMigration = GetNewOAuthAuthorizationSetting();
@@ -137,8 +155,19 @@ namespace GitHub.Runner.Listener
 
                     if (!IsSessionCreationExceptionRetriable(ex))
                     {
-                        _term.WriteError($"Failed to create session. {ex.Message}");
-                        return false;
+                        if (_useV2Credentials && _v1CredentialsExists)
+                        {
+                            // v2 credentials might cause lose permission during permission check,
+                            // we will force to use v1 credential and try again
+                            _useV2Credentials = false;
+                            creds = _credMgr.LoadCredentials(false);
+                            Trace.Error("Fallback to v1 credentials and try again.");
+                        }
+                        else
+                        {
+                            _term.WriteError($"Failed to create session. {ex.Message}");
+                            return false;
+                        }
                     }
 
                     if (!encounteringError) //print the message only on the first error
@@ -200,14 +229,14 @@ namespace GitHub.Runner.Listener
                         continuousError = 0;
                     }
 
-                    if (_needsNewAuthorizationUrl &&
+                    if (_needNewAuthorizationUrl &&
                         _newAuthorizationUrlMigration.IsCompleted &&
                         !_authorizationUrlUpdated)
                     {
                         if (HostContext.GetService<IJobDispatcher>().Busy ||
                             HostContext.GetService<ISelfUpdater>().Busy)
                         {
-                            Trace.Info("Job or runner updates in progress.");
+                            Trace.Info("Job or runner updates in progress, update credentials next time.");
                         }
                         else
                         {
@@ -216,6 +245,7 @@ namespace GitHub.Runner.Listener
                                 var newCred = await _newAuthorizationUrlMigration;
                                 await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), newCred);
                                 _authorizationUrlUpdated = true;
+                                _useV2Credentials = true;
                             }
                             catch (Exception ex)
                             {
@@ -247,7 +277,19 @@ namespace GitHub.Runner.Listener
                     }
                     else if (!IsGetNextMessageExceptionRetriable(ex))
                     {
-                        throw;
+                        if (_useV2Credentials && _v1CredentialsExists)
+                        {
+                            // v2 credentials might cause lose permission during permission check,
+                            // we will force to use v1 credential and try again
+                            _useV2Credentials = false;
+                            var v1Creds = _credMgr.LoadCredentials(false);
+                            await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), v1Creds);
+                            Trace.Error("Fallback to v1 credentials and try again.");
+                        }
+                        else
+                        {
+                            throw;
+                        }
                     }
                     else
                     {
@@ -452,8 +494,7 @@ namespace GitHub.Runner.Listener
                     var v2AuthorizationUrl = await _runnerServer.GetRunnerAuthUrlAsync(_settings.PoolId, _settings.AgentId);
                     if (!string.IsNullOrEmpty(v2AuthorizationUrl))
                     {
-                        var store = HostContext.GetService<IConfigurationStore>();
-                        var credData = store.GetCredentials();
+                        var credData = _configStore.GetCredentials();
                         var clientId = credData.Data.GetValueOrDefault("clientId", null);
                         var currentAuthorizationUrl = credData.Data.GetValueOrDefault("authorizationUrl", null);
                         Trace.Info($"Current authorization url: {currentAuthorizationUrl}, new authorization url: {v2AuthorizationUrl}");
@@ -481,7 +522,7 @@ namespace GitHub.Runner.Listener
                             },
                         };
 
-                        HostContext.GetService<IConfigurationStore>().SaveV2Credential(credDataV2);
+                        _configStore.SaveV2Credential(credDataV2);
                         return v2RunnerCredential;
                     }
                 }

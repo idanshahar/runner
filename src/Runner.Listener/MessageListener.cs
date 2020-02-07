@@ -31,6 +31,7 @@ namespace GitHub.Runner.Listener
         private long? _lastMessageId;
         private RunnerSettings _settings;
         private bool _needsNewAuthorizationUrl;
+        private bool _authorizationUrlUpdated;
         private ITerminal _term;
         private IRunnerServer _runnerServer;
         private TaskAgentSession _session;
@@ -39,7 +40,7 @@ namespace GitHub.Runner.Listener
         private readonly TimeSpan _sessionConflictRetryLimit = TimeSpan.FromMinutes(4);
         private readonly TimeSpan _clockSkewRetryLimit = TimeSpan.FromMinutes(30);
         private readonly Dictionary<string, int> _sessionCreationExceptionTracker = new Dictionary<string, int>();
-        private Task _authUrlMigrationCheckTimer;
+        private Task<VssCredentials> _newAuthorizationUrlMigration;
 
         public override void Initialize(IHostContext hostContext)
         {
@@ -47,7 +48,6 @@ namespace GitHub.Runner.Listener
 
             _term = HostContext.GetService<ITerminal>();
             _runnerServer = HostContext.GetService<IRunnerServer>();
-            _authUrlMigrationCheckTimer = Task.Delay(BackoffTimerHelper.GetRandomBackoff(TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(45)));
         }
 
         public async Task<Boolean> CreateSessionAsync(CancellationToken token)
@@ -110,6 +110,12 @@ namespace GitHub.Runner.Listener
                         _term.WriteLine($"{DateTime.UtcNow:u}: Runner reconnected.");
                         _sessionCreationExceptionTracker.Clear();
                         encounteringError = false;
+                    }
+
+                    if (_needsNewAuthorizationUrl)
+                    {
+                        // start background task try to get new authorization url
+                        _newAuthorizationUrlMigration = GetNewOAuthAuthorizationSetting();
                     }
 
                     return true;
@@ -194,9 +200,29 @@ namespace GitHub.Runner.Listener
                         continuousError = 0;
                     }
 
-                    if (_authUrlMigrationCheckTimer.IsCompleted)
+                    if (_needsNewAuthorizationUrl &&
+                        _newAuthorizationUrlMigration.IsCompleted &&
+                        !_authorizationUrlUpdated)
                     {
-                        // Check service to see whether we needs to update runner authorization url in .credentials file
+                        if (HostContext.GetService<IJobDispatcher>().Busy ||
+                            HostContext.GetService<ISelfUpdater>().Busy)
+                        {
+                            Trace.Info("Job or runner updates in progress.");
+                        }
+                        else
+                        {
+                            try
+                            {
+                                var newCred = await _newAuthorizationUrlMigration;
+                                await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), newCred);
+                                _authorizationUrlUpdated = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                Trace.Error("Fail to refresh connection with new authorization url.");
+                                Trace.Error(ex);
+                            }
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -414,7 +440,7 @@ namespace GitHub.Runner.Listener
             }
         }
 
-        private async Task GetNewOAuthAuthorizationSetting()
+        private async Task<VssCredentials> GetNewOAuthAuthorizationSetting()
         {
             while (true)
             {
@@ -456,7 +482,7 @@ namespace GitHub.Runner.Listener
                         };
 
                         HostContext.GetService<IConfigurationStore>().SaveV2Credential(credDataV2);
-                        return;
+                        return v2RunnerCredential;
                     }
                 }
                 catch (Exception ex)

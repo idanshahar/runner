@@ -89,7 +89,6 @@ namespace GitHub.Runner.Common
 
     public sealed class ConfigurationStore : RunnerService, IConfigurationStore
     {
-        private bool _v2CredUpdated;
         private string _binPath;
         private string _configFilePath;
         private string _credFilePath;

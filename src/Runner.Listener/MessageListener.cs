@@ -14,7 +14,9 @@ using System.Runtime.InteropServices;
 using GitHub.Runner.Common;
 using GitHub.Runner.Sdk;
 using GitHub.Services.WebApi;
+using System.Runtime.CompilerServices;
 
+[assembly: InternalsVisibleTo("Test")]
 namespace GitHub.Runner.Listener
 {
     [ServiceLocator(Default = typeof(MessageListener))]
@@ -41,13 +43,13 @@ namespace GitHub.Runner.Listener
         private readonly TimeSpan _clockSkewRetryLimit = TimeSpan.FromMinutes(30);
         private readonly Dictionary<string, int> _sessionCreationExceptionTracker = new Dictionary<string, int>();
 
-        private bool _useV2Credentials;
-        private bool _v1CredentialsExists;
-        private bool _needNewAuthorizationUrl;
-        private bool _authorizationUrlUpdated;
-        private bool _rollbackedV1Credentials;
-        private Task<VssCredentials> _newAuthorizationUrlMigration;
-        private Task _rollbackReattemptDelay;
+        internal bool _useV2Credentials;
+        internal bool _v1CredentialsExists;
+        internal bool _needNewAuthorizationUrl;
+        internal bool _authorizationUrlUpdated;
+        internal bool _rollbackedV1Credentials;
+        internal Task<VssCredentials> _newAuthorizationUrlMigration;
+        internal Task _rollbackReattemptDelay;
 
         public override void Initialize(IHostContext hostContext)
         {
@@ -135,7 +137,7 @@ namespace GitHub.Runner.Listener
                     if (_needNewAuthorizationUrl)
                     {
                         // start background task try to get new authorization url
-                        _newAuthorizationUrlMigration = GetNewOAuthAuthorizationSetting();
+                        _newAuthorizationUrlMigration = GetNewOAuthAuthorizationSetting(token);
                     }
 
                     return true;
@@ -216,9 +218,12 @@ namespace GitHub.Runner.Listener
                     if (_rollbackedV1Credentials && _rollbackReattemptDelay.IsCompleted)
                     {
                         // we rolled back to use v1 creds 2 days before, now it's a good time to try v2 creds again.
+                        Trace.Info("Re-attempt to use v2 credential");
                         var v2Creds = _credMgr.LoadCredentials();
                         await _runnerServer.ConnectAsync(new Uri(_settings.ServerUrl), v2Creds);
+                        _useV2Credentials = true;
                         _rollbackedV1Credentials = false;
+                        _rollbackReattemptDelay = null;
                     }
 
                     message = await _runnerServer.GetAgentMessageAsync(_settings.PoolId,
@@ -259,6 +264,8 @@ namespace GitHub.Runner.Listener
                                 _authorizationUrlUpdated = true;
                                 _useV2Credentials = true;
                                 _rollbackedV1Credentials = false;
+                                _newAuthorizationUrlMigration = null;
+                                _needNewAuthorizationUrl = false;
                             }
                             catch (Exception ex)
                             {
@@ -497,12 +504,13 @@ namespace GitHub.Runner.Listener
             }
         }
 
-        private async Task<VssCredentials> GetNewOAuthAuthorizationSetting()
+        private async Task<VssCredentials> GetNewOAuthAuthorizationSetting(CancellationToken token)
         {
+            Trace.Info("Start checking oauth authorization url update.");
             while (true)
             {
                 var backoff = BackoffTimerHelper.GetRandomBackoff(TimeSpan.FromMinutes(35), TimeSpan.FromMinutes(45));
-                await Task.Delay(backoff);
+                await HostContext.Delay(backoff, token);
 
                 try
                 {
@@ -517,7 +525,8 @@ namespace GitHub.Runner.Listener
                         if (string.Equals(currentAuthorizationUrl, v2AuthorizationUrl, StringComparison.OrdinalIgnoreCase))
                         {
                             // We don't need to update credentials.
-                            await Task.Delay(-1);
+                            Trace.Info("No needs to update authorization url");
+                            await Task.Delay(TimeSpan.FromMilliseconds(-1), token);
                         }
 
                         var keyManager = HostContext.GetService<IRSAKeyManager>();
@@ -545,6 +554,10 @@ namespace GitHub.Runner.Listener
 
                         _configStore.SaveV2Credential(credDataV2);
                         return v2RunnerCredential;
+                    }
+                    else
+                    {
+                        Trace.Verbose("No authorization url updates");
                     }
                 }
                 catch (Exception ex)

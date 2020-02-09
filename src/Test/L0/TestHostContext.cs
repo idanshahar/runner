@@ -90,9 +90,18 @@ namespace GitHub.Runner.Common.Tests
 
         public RunnerWebProxy WebProxy => new RunnerWebProxy();
 
+        public bool Real100MSDelay { get; set; }
+
         public async Task Delay(TimeSpan delay, CancellationToken token)
         {
-            await Task.Delay(TimeSpan.Zero);
+            if (Real100MSDelay)
+            {
+                await Task.Delay(100, token);
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.Zero);
+            }
         }
 
         public T CreateService<T>() where T : class, IRunnerService
@@ -198,7 +207,7 @@ namespace GitHub.Runner.Common.Tests
 
                 case WellKnownDirectory.Tools:
                     path = Environment.GetEnvironmentVariable("RUNNER_TOOL_CACHE");
-                    
+
                     if (string.IsNullOrEmpty(path))
                     {
                         path = Path.Combine(
